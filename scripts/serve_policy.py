@@ -7,6 +7,7 @@ import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.policies import rtc_policy as _rtc_policy
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -54,6 +55,18 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # === RTC (Real-Time Chunking) 参数 ===
+    # 是否启用RTC（Real-Time Chunking）来消除动作块切换时的停顿和不连续性
+    enable_rtc: bool = False
+    # RTC的动作horizon（每个chunk的动作数量）
+    rtc_action_horizon: int = 50
+    # RTC的overlap步数（用于平滑过渡，None表示自动设置为horizon的20%）
+    rtc_overlap_steps: int | None = None
+    # RTC的混合权重（0-1，越大越倾向保持旧chunk）
+    rtc_blend_weight: float = 0.7
+    # 是否启用RTC详细日志
+    rtc_verbose: bool = True
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
@@ -99,6 +112,24 @@ def create_policy(args: Args) -> _policy.Policy:
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
+
+    # 应用RTC包装器（如果启用）
+    if args.enable_rtc:
+        logging.info("=" * 70)
+        logging.info("启用 Real-Time Chunking (RTC)")
+        logging.info(f"  - action_horizon: {args.rtc_action_horizon}")
+        logging.info(f"  - overlap_steps: {args.rtc_overlap_steps or 'auto'}")
+        logging.info(f"  - blend_weight: {args.rtc_blend_weight}")
+        logging.info(f"  - verbose: {args.rtc_verbose}")
+        logging.info("=" * 70)
+        
+        policy = _rtc_policy.RTCPolicy(
+            policy=policy,
+            action_horizon=args.rtc_action_horizon,
+            overlap_steps=args.rtc_overlap_steps,
+            blend_weight=args.rtc_blend_weight,
+            enable_logging=args.rtc_verbose,
+        )
 
     # Record the policy's behavior.
     if args.record:

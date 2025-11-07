@@ -1,0 +1,83 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train Pi05 Fold Cloth",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "scripts.train",
+            "args": [
+                "pi05_fold_cloth",
+                "--exp-name=fold_cloth_experiment",
+                "--overwrite"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Train Pi0 Fold Cloth",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "scripts.train",
+            "args": [
+                "pi0_fold_cloth",
+                "--exp-name=fold_cloth_experiment",
+                "--overwrite"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Train Pi0-FAST Fold Cloth",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "scripts.train",
+            "args": [
+                "pi0_fast_fold_cloth",
+                "--exp-name=fold_cloth_experiment",
+                "--overwrite"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Compute Norm Stats - Fold Cloth",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "scripts.compute_norm_stats",
+            "args": [
+                "--config-name",
+                "pi05_fold_cloth"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "${workspaceFolder}/.venv/bin/python"
+        }
+    ]
+}
+

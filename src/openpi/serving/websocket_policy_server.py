@@ -4,12 +4,46 @@ import logging
 import time
 import traceback
 
+import numpy as np
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
 import websockets.asyncio.server as _server
 import websockets.frames
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_msgpack_to_numpy(obj):
+    """递归地将msgpack格式的numpy数组字典转换为真正的numpy数组
+    
+    msgpack格式: {b'data': bytes, b'shape': tuple, b'type': str, b'kind': str, b'nd': bool}
+    转换为: numpy.ndarray
+    """
+    if isinstance(obj, dict):
+        # 检查是否是msgpack格式的numpy数组
+        if b'data' in obj and b'shape' in obj and b'type' in obj:
+            try:
+                array_bytes = obj[b'data']
+                shape = tuple(obj[b'shape'])
+                dtype_str = obj[b'type'].decode() if isinstance(obj[b'type'], bytes) else obj[b'type']
+                array = np.frombuffer(array_bytes, dtype=dtype_str).reshape(shape)
+                logger.debug(f"转换msgpack数组: shape={shape}, dtype={dtype_str}")
+                return array
+            except Exception as e:
+                logger.error(f"转换msgpack数组失败: {e}")
+                raise
+        else:
+            # 递归处理字典中的每个值，同时将字节串键转换为字符串键
+            return {
+                (k.decode() if isinstance(k, bytes) else k): _convert_msgpack_to_numpy(v)
+                for k, v in obj.items()
+            }
+    elif isinstance(obj, (list, tuple)):
+        # 递归处理列表/元组
+        return type(obj)(_convert_msgpack_to_numpy(item) for item in obj)
+    else:
+        # 其他类型直接返回
+        return obj
 
 
 class WebsocketPolicyServer:
@@ -55,11 +89,29 @@ class WebsocketPolicyServer:
         while True:
             try:
                 start_time = time.monotonic()
-                obs = msgpack_numpy.unpackb(await websocket.recv())
+                raw_data = await websocket.recv()
+                logger.info(f"[Server] 接收到原始数据大小: {len(raw_data)} 字节")
+                obs = msgpack_numpy.unpackb(raw_data)
+                logger.info(f"[Server] 反序列化后的obs keys: {obs.keys()}")
+                
+                # 转换msgpack格式的numpy数组为真正的numpy数组
+                obs = _convert_msgpack_to_numpy(obs)
+                logger.info(f"[Server] 转换后的obs keys: {obs.keys()}")
+                
+                for key, value in obs.items():
+                    if isinstance(value, dict):
+                        logger.info(f"[Server] obs['{key}'] = dict with keys: {value.keys()}")
+                    else:
+                        logger.info(f"[Server] obs['{key}'] = {type(value)}, shape={getattr(value, 'shape', 'N/A')}, dtype={getattr(value, 'dtype', 'N/A')}")
 
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
+                logger.info(f"[Server] 推理完成，耗时: {infer_time*1000:.2f}ms")
+                logger.info(f"[Server] 返回的action keys: {action.keys()}")
+                for key, value in action.items():
+                    if hasattr(value, 'shape'):
+                        logger.info(f"[Server] action['{key}'] shape: {value.shape}, dtype: {value.dtype}")
 
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
@@ -68,7 +120,10 @@ class WebsocketPolicyServer:
                     # We can only record the last total time since we also want to include the send time.
                     action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
 
-                await websocket.send(packer.pack(action))
+                packed_action = packer.pack(action)
+                logger.info(f"[Server] 发送响应数据，大小: {len(packed_action)} 字节")
+                await websocket.send(packed_action)
+                logger.info(f"[Server] 响应发送成功")
                 prev_total_time = time.monotonic() - start_time
 
             except websockets.ConnectionClosed:

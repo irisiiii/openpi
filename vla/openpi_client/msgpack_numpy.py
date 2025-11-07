@@ -50,8 +50,8 @@ def unpack_array(obj):
     return obj
 
 
-Packer = functools.partial(msgpack.Packer, default=pack_array, use_bin_type=True)
-packb = functools.partial(msgpack.packb, default=pack_array, use_bin_type=True)
+Packer = functools.partial(msgpack.Packer, default=pack_array)
+packb = functools.partial(msgpack.packb, default=pack_array)
 
-Unpacker = functools.partial(msgpack.Unpacker, object_hook=unpack_array, raw=False, strict_map_key=False)
-unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array, raw=False, strict_map_key=False)
+Unpacker = functools.partial(msgpack.Unpacker, object_hook=unpack_array)
+unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)

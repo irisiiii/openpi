@@ -19,6 +19,8 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.fold_cloth_policy as fold_cloth_policy
+import openpi.policies.jaka_policy as jaka_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -348,6 +350,161 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotJakaDataConfig(DataConfigFactory):
+    """
+    Data config for Jaka robot dataset in LeRobot format.
+    
+    This config handles:
+    - State: 8 dimensions (7 joints + 1 gripper)
+    - Actions: 8 dimensions (7 joints + 1 gripper)
+    - Images: wrist_image_left and top camera
+    """
+
+    # If true, will convert joint dimensions to deltas with respect to the current state.
+    # Set to False if your dataset already contains delta actions.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack transform: map dataset keys to model input keys
+        # This transform is only applied during training, not during inference
+        # Format is {"target_key": "source_key"}
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "wrist_image_left": "observation.wrist_image_left",
+                        "top": "observation.top",
+                        "state": "observation.state",
+                        "actions": "action",  # Map "action" from dataset to "actions" for model
+                        "prompt": "task",  # Map "task" to "prompt" for model
+                    }
+                )
+            ]
+        )
+
+        # Data transforms: applied during both training and inference
+        # Define how to convert dataset format to model input/output format
+        data_transforms = _transforms.Group(
+            inputs=[jaka_policy.JakaInputs(model_type=model_config.model_type)],
+            outputs=[jaka_policy.JakaOutputs()],
+        )
+
+        # Apply delta actions transform if needed
+        # Pi0 models are trained on delta actions (relative to the first state in each action chunk)
+        # If your dataset has absolute actions (target joint angles), set use_delta_joint_actions=True
+        # The gripper dimension (last dimension) will remain absolute
+        if self.use_delta_joint_actions:
+            # Apply delta conversion to first 7 actions (joints), leave last action (gripper) absolute
+            delta_action_mask = _transforms.make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # Model transforms: tokenization, etc. (do not change)
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # Create the base config and add transforms
+        base_config = self.create_base_config(assets_dirs, model_config)
+        
+        # Add default prompt if specified
+        if self.default_prompt is not None:
+            repack_transform = repack_transform.push(
+                inputs=[_transforms.DefaultValue("prompt", self.default_prompt)]
+            )
+
+        return dataclasses.replace(
+            base_config,
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotFoldClothDataConfig(DataConfigFactory):
+    """
+    Data config for Fold Cloth dataset (Piper dual-arm robot) in LeRobot format.
+    
+    This config handles:
+    - State: 14 dimensions (left arm 6 joints + gripper + right arm 6 joints + gripper)
+    - Actions: 14 dimensions (left arm 6 joints + gripper + right arm 6 joints + gripper)
+    - Images: wrist_image_left, wrist_image_right, low (overhead camera)
+    """
+
+    # If true, will convert joint dimensions to deltas with respect to the current state.
+    # Set to False if your dataset already contains delta actions.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack transform: map dataset keys to model input keys
+        # This transform is only applied during training, not during inference
+        # Format is {"target_key": "source_key"}
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "wrist_image_left": "observation.wrist_image_left",
+                        "wrist_image_right": "observation.wrist_image_right",
+                        "low": "observation.low",
+                        "state": "observation.state",
+                        "actions": "action",  # Map "action" from dataset to "actions" for model
+                        "prompt": "task",  # Map "task" to "prompt" for model
+                    }
+                )
+            ]
+        )
+
+        # Data transforms: applied during both training and inference
+        # Define how to convert dataset format to model input/output format
+        data_transforms = _transforms.Group(
+            inputs=[fold_cloth_policy.FoldClothInputs(model_type=model_config.model_type)],
+            outputs=[fold_cloth_policy.FoldClothOutputs()],
+        )
+
+        # Apply delta actions transform if needed
+        # Pi0 models are trained on delta actions (relative to the first state in each action chunk)
+        # If your dataset has absolute actions (target joint angles), set use_delta_joint_actions=True
+        # The gripper dimensions (indices 6 and 13) will remain absolute
+        if self.use_delta_joint_actions:
+            # Apply delta conversion to first 6 actions (left arm joints), 
+            # leave action 6 (left gripper) absolute,
+            # apply delta to actions 7-12 (right arm joints),
+            # leave action 13 (right gripper) absolute
+            # Create mask: True for joints (0-5, 7-12), False for grippers (6, 13)
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)  # [True]*6 + [False] + [True]*6 + [False]
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # Model transforms: tokenization, etc. (do not change)
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # Create the base config and add transforms
+        base_config = self.create_base_config(assets_dirs, model_config)
+        
+        # Add default prompt if specified
+        if self.default_prompt is not None:
+            repack_transform = repack_transform.push(
+                inputs=[_transforms.DefaultValue("prompt", self.default_prompt)]
+            )
+
+        return dataclasses.replace(
+            base_config,
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
@@ -751,6 +908,179 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning Jaka configs.
+    #
+    TrainConfig(
+        name="pi0_jaka",
+        # Pi0 model configuration for Jaka robot (8D actions: 7 joints + 1 gripper)
+        model=pi0_config.Pi0Config(action_horizon=10),
+        data=LeRobotJakaDataConfig(
+            # Use absolute path for local dataset
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/jaka_bowel_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/jaka/norm_stats.json)
+                asset_id="jaka",
+            ),
+            # Set to True if your actions are absolute joint positions
+            # Set to False if your actions are already delta values
+            use_delta_joint_actions=True,
+            # Optional: provide a default prompt if your dataset doesn't include prompts
+            # default_prompt="pick up the object",
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        # Load base pi0 model weights for fine-tuning
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Training hyperparameters
+        batch_size=32,
+        num_train_steps=20_000,
+        # Save checkpoints every 1000 steps
+        save_interval=1000,
+    ),
+    TrainConfig(
+        name="pi05_jaka",
+        # Pi0.5 model configuration for Jaka robot with LoRA for low memory fine-tuning
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False, 
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotJakaDataConfig(
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/jaka_bowel_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/jaka/norm_stats.json)
+                # assets_dir defaults to ./assets when not specified
+                asset_id="jaka",
+            ),
+            use_delta_joint_actions=True,
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=8,  # Further reduced to 4 for very limited memory
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        # Turn off EMA for LoRA finetuning to save memory
+        ema_decay=None,
+        num_train_steps=20_000,
+        save_interval=1000,
+        # Freeze filter for LoRA: only train LoRA parameters
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi0_fast_jaka",
+        # Pi0-FAST model configuration for Jaka robot
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=8,  # 7 joints + 1 gripper
+            action_horizon=10,
+            max_token_len=180,  # Good for single-arm robots
+        ),
+        data=LeRobotJakaDataConfig(
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/jaka_bowel_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/jaka/norm_stats.json)
+                asset_id="jaka",
+            ),
+            use_delta_joint_actions=True,
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        batch_size=32,
+        num_train_steps=20_000,
+        save_interval=1000,
+    ),
+    #
+    # Fine-tuning Fold Cloth (Piper dual-arm) configs.
+    #
+    TrainConfig(
+        name="pi0_fold_cloth",
+        # Pi0 model configuration for Piper dual-arm robot (14D actions: 2×(6 joints + 1 gripper))
+        model=pi0_config.Pi0Config(action_horizon=10),
+        data=LeRobotFoldClothDataConfig(
+            # Use absolute path for local dataset
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/fold_cloth_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/fold_cloth/norm_stats.json)
+                asset_id="fold_cloth",
+            ),
+            # Set to True if your actions are absolute joint positions
+            # Set to False if your actions are already delta values
+            use_delta_joint_actions=True,
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        # Load base pi0 model weights for fine-tuning
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Training hyperparameters
+        batch_size=32,
+        num_train_steps=20_000,
+        # Save checkpoints every 1000 steps
+        save_interval=1000,
+    ),
+    TrainConfig(
+        name="pi05_fold_cloth",
+        # Pi0.5 model configuration for Piper dual-arm robot with LoRA for low memory fine-tuning
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False, 
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotFoldClothDataConfig(
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/fold_cloth_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/fold_cloth/norm_stats.json)
+                # assets_dir defaults to ./assets when not specified
+                asset_id="fold_cloth",
+            ),
+            use_delta_joint_actions=True,
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=8,  # Reduced for lower memory usage with LoRA
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=19_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=20_000,
+        save_interval=1000,
+        # Freeze filter for LoRA: only train LoRA parameters
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi0_fast_fold_cloth",
+        # Pi0-FAST model configuration for Piper dual-arm robot
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=14,  # 2 × (6 joints + 1 gripper)
+            action_horizon=10,
+            max_token_len=256,  # Larger for dual-arm robots
+        ),
+        data=LeRobotFoldClothDataConfig(
+            repo_id="/home/beautycube/jwq/openpi2/openpi/data/fold_cloth_lerobot/train",
+            assets=AssetsConfig(
+                # Use local assets directory (assets/fold_cloth/norm_stats.json)
+                asset_id="fold_cloth",
+            ),
+            use_delta_joint_actions=True,
+            # Specify that the action column is named "action" not "actions"
+            base_config=DataConfig(action_sequence_keys=("action",)),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        batch_size=32,
+        num_train_steps=20_000,
+        save_interval=1000,
     ),
     #
     # Fine-tuning Aloha configs.
